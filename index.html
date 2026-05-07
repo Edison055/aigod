@@ -27,7 +27,7 @@
         const { useState, useRef, useEffect } = React;
 
         // 核心設定：使用支援全模態的模型
-        const DEFAULT_MODEL = "google/gemini-flash-1.5"; // 這個型號對圖檔與 PDF 相容性最高，且 OpenRouter 常有免費額度
+       const DEFAULT_MODEL = "google/gemini-flash-1.5-exp";
 
         const AGENTS = [
             {id:"gpt4o", name:"邏輯架構師", color:"#10b981", persona:"資深學術編修。擅長構建嚴密論證框架。文字精煉。"},
@@ -60,19 +60,19 @@
                 const url = "https://openrouter.ai/api/v1/chat/completions";
                 
                 // 構建多模態內容
-                const parts = [
-                    { type: "text", text: `## 系統指令\n${sys}\n\n## 用戶指令與課題\n${user}` }
-                ];
+            // 構建多模態內容
+const parts = [
+    { type: "text", text: `## 系統指令\n${sys}\n\n## 用戶課題\n${user}` }
+];
 
-                // 如果有檔案資料，加入請求中
-                if (fileData) {
-                    parts.push({
-                        type: "image_url", // OpenRouter 用這個欄位處理大多數模態，包括 PDF
-                        image_url: {
-                            url: `data:${fileData.type};base64,${fileData.base64}`
-                        }
-                    });
-                }
+if (fileData) {
+    parts.push({
+        type: "image_url",
+        image_url: {
+            url: `data:${fileData.type};base64,${fileData.base64}`
+        }
+    });
+}
 
                 const res = await fetch(url, {
                     method: "POST",
