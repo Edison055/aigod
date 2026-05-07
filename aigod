@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Council — 全能學術議會</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        body{height:100vh;background:#05070a;color:#d1d5db;font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;overflow:hidden}
+        #root{height:100%}
+        .scroll-v::-webkit-scrollbar{width:4px}
+        .scroll-v::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px}
+        @keyframes slide{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        .msg-anim{animation:slide 0.4s ease-out forwards}
+        input:focus{outline:none;border-color:#6366f1}
+        .file-label{cursor:pointer;opacity:0.6;transition:all 0.2s}
+        .file-label:hover{opacity:1;background:rgba(255,255,255,0.05)}
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // 核心設定：使用支援全模態的模型
+        const DEFAULT_MODEL = "google/gemini-flash-1.5"; // 這個型號對圖檔與 PDF 相容性最高，且 OpenRouter 常有免費額度
+
+        const AGENTS = [
+            {id:"gpt4o", name:"邏輯架構師", color:"#10b981", persona:"資深學術編修。擅長構建嚴密論證框架。文字精煉。"},
+            {id:"gemini", name:"文獻思辨家", color:"#a78bfa", persona:"跨學科研究專家。結合經典理論，對文件內容多做價值判斷。"},
+            {id:"nova", name:"批判性審查", color:"#4fc3f7", persona:"嚴苛期刊審稿人。尋找文件或論點中的邏輯漏洞。"},
+            {id:"sage", name:"人文倫理學", color:"#66bb6a", persona:"人文哲學家。關注文件議題對社會的長遠衝擊。"}
+        ];
+
+        const App = () => {
+            const [key, setKey] = useState(localStorage.getItem("or_key") || "");
+            const [tempKey, setTempKey] = useState("");
+            const [msgs, setMsgs] = useState([]);
+            const [input, setInput] = useState("");
+            const [loading, setLoading] = useState(false);
+            const [file, setFile] = useState(null); // 暫存檔案
+            const scrollRef = useRef();
+
+            useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [msgs]);
+
+            // 將檔案轉為 Base64 的函數
+            const toBase64 = (file) => new Promise((res, rej) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => res(reader.result.split(',')[1]); // 只要 Data 部份
+                reader.onerror = rej;
+            });
+
+            // 支援多模態的 OpenRouter 請求函數
+            const callAPI = async (k, sys, user, fileData, cb) => {
+                const url = "https://openrouter.ai/api/v1/chat/completions";
+                
+                // 構建多模態內容
+                const parts = [
+                    { type: "text", text: `## 系統指令\n${sys}\n\n## 用戶指令與課題\n${user}` }
+                ];
+
+                // 如果有檔案資料，加入請求中
+                if (fileData) {
+                    parts.push({
+                        type: "image_url", // OpenRouter 用這個欄位處理大多數模態，包括 PDF
+                        image_url: {
+                            url: `data:${fileData.type};base64,${fileData.base64}`
+                        }
+                    });
+                }
+
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${k}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        model: DEFAULT_MODEL, 
+                        messages: [
+                            { 
+                                role: "user", 
+                                content: parts // 改為陣列結構
+                            }
+                        ],
+                        stream: true
+                    })
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json();
+                    throw new Error(errData.error?.message || "請求失敗");
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split("\n").filter(line => line.trim() !== "");
+                    for (const line of lines) {
+                        const cleanLine = line.trim();
+                        if (cleanLine.startsWith("data: ")) {
+                            if (cleanLine.includes("[DONE]")) break;
+                            try {
+                                const json = JSON.parse(cleanLine.slice(6));
+                                const content = json.choices[0]?.delta?.content;
+                                if (content) {
+                                    fullText += content;
+                                    cb(fullText);
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+                return fullText;
+            };
+
+            const run = async () => {
+                if(!input.trim() || loading) return;
+                const q = input; const currentFile = file; setInput(""); setFile(null); setLoading(true);
+                
+                // 顯示用戶訊息
+                let userMsg = { role: "user", text: q };
+                if (currentFile) userMsg.fileName = currentFile.name;
+                setMsgs([userMsg]);
+
+                const context = {};
+                let fileBase64 = null;
+                
+                try {
+                    // 1. 如果有檔案，先轉換
+                    if (currentFile) {
+                        const base64 = await toBase64(currentFile);
+                        fileBase64 = { base64, type: currentFile.type };
+                    }
+
+                    // 2. 輪流調用 Agent
+                    for (const a of AGENTS) {
+                        const mid = Date.now() + a.id;
+                        setMsgs(p => [...p, {role:"agent", name:a.name, color:a.color, text:"", id:mid}]);
+                        context[a.id] = await callAPI(key, a.persona, q, fileBase64, (t) => {
+                            setMsgs(p => p.map(m => m.id === mid ? {...m, text:t} : m));
+                        });
+                    }
+
+                    // 3. 裁決者
+                    const arbId = "arb-" + Date.now();
+                    setMsgs(p => [...p, {role:"agent", name:"⚡ ARBITER", color:"#fbbf24", text:"", id:arbId}]);
+                    const prompt = `原始課題/指令：${q}\n\n討論內容：\n${Object.values(context).join("\n\n")}`;
+                    await callAPI(key, "資深學術裁決者。批判性集成觀點。改寫句子確保去AI特徵（不連續重複8字）。文字通俗但具深度。直接判斷。如果是針對文件，請給出核心判斷。", prompt, null, (t) => {
+                        setMsgs(p => p.map(m => m.id === arbId ? {...m, text:t} : m));
+                    });
+                } catch(e){ alert(e.message); } finally { setLoading(false); }
+            };
+
+            if(!key) return (
+                <div style={{height:"100%", display:"flex", alignItems:"center", justifyContent:"center", background:"#05070a"}}>
+                    <div style={{width:320}}>
+                        <h2 style={{color:"#fff", textAlign:"center", marginBottom:20}}>🏛️ AI COUNCIL</h2>
+                        <input type="password" placeholder="貼上 OpenRouter Key" value={tempKey} onChange={e=>setTempKey(e.target.value)} style={{width:"100%", padding:15, background:"#111", border:"1px solid #333", color:"#fff", borderRadius:10, marginBottom:10}} />
+                        <button onClick={()=>{localStorage.setItem("or_key", tempKey.trim()); setKey(tempKey.trim());}} style={{width:"100%", padding:12, background:"#6366f1", color:"#fff", border:"none", borderRadius:10, cursor:"pointer"}}>進入全能議會</button>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div style={{height:"100%", display:"flex", flexDirection:"column"}}>
+                    <header style={{padding:15, borderBottom:"1px solid #222", background:"#0d1117", display:"flex", justifyContent:"space-between"}}>
+                        <span style={{color:"#8b949e", fontSize:12, fontFamily:"Space Mono"}}>AC-ULTRA-V1</span>
+                        <button onClick={()=>{localStorage.removeItem("or_key"); setKey("");}} style={{background:"none", border:"none", color:"#f85149", cursor:"pointer", fontSize:11}}>RESET</button>
+                    </header>
+                    <main ref={scrollRef} className="scroll-v" style={{flex:1, overflowY:"auto", padding:20, background:"#05070a"}}>
+                        {msgs.map((m,i) => (
+                            <div key={i} className="msg-anim" style={{marginBottom:25, maxWidth:m.role==="user"?"85%":"100%", marginLeft:m.role==="user"?"auto":"0"}}>
+                                {m.name && <div style={{fontSize:11, fontWeight:"bold", color:m.color, marginBottom:5}}>{m.name}</div>}
+                                <div style={{padding:15, background:m.role==="user"?"#161b22":"#111", borderRadius:12, border:"1px solid #333", fontSize:14.5, lineHeight:1.8, whiteSpace:"pre-wrap", color:"#e6edf3"}}>
+                                    {m.fileName && <div style={{background:"rgba(255,255,255,0.05)", padding:8, borderRadius:6, fontSize:12, color:"#a78bfa", marginBottom:10}}>📄 檔案：{m.fileName}</div>}
+                                    {m.text || "正在審議文檔與課題..."}
+                                </div>
+                            </div>
+                        ))}
+                    </main>
+                    <footer style={{padding:20, background:"#0d1117", borderTop:"1px solid #222"}}>
+                        <div style={{display:"flex", gap:10, maxWidth:800, margin:"0 auto", alignItems:"center"}}>
+                            
+                            {/* 上傳檔案按鈕 */}
+                            <label className="file-label" style={{border:"1px solid #333", padding:"15px", borderRadius:12}}>
+                                <span style={{fontSize:20}}>{file ? "✅" : "📎"}</span>
+                                <input type="file" accept="image/*, application/pdf" onChange={e=>setFile(e.target.files[0])} style={{display:"none"}} />
+                            </label>
+                            
+                            <div style={{flex:1, display:"flex", flexDirection:"column", gap:5}}>
+                                {file && <div style={{fontSize:11, color:"#8b949e", marginLeft:5}}>待傳送: {file.name} ({(file.size/1024/1024).toFixed(1)} MB)</div>}
+                                <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter" && run()} placeholder={file ? `針對該檔案發起討論...` : `發起文字課題討論...`} style={{width:"100%", padding:15, background:"#010409", border:"1px solid #333", color:"fff", borderRadius:12}} />
+                            </div>
+                            
+                            <button onClick={run} disabled={loading} style={{padding:"15px 25px", background:loading?"#222":"#238636", color:"#fff", border:"none", borderRadius:12, cursor:"pointer", fontWeight:"bold", height:"53px"}}>
+                                {loading?"...":"提交"}
+                            </button>
+                        </div>
+                    </footer>
+                </div>
+            );
+        };
+        const root = ReactDOM.createRoot(document.getElementById("root"));
+        root.render(<App />);
+    </script>
+</body>
+</html>
